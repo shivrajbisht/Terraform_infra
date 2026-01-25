@@ -35,3 +35,25 @@ module "nsg_association" {
   nsg_association = var.nsg_association
   
 }
+module "lb" {
+  depends_on = [module.rg, module.vnet,module.computing,module.nsg]
+  source     = "../../modules/loadblancer"
+  loadbalancer = var.loadbalancer
+}
+module "vm2_backpool_association" {
+  depends_on = [module.lb, module.computing]
+  source     = "../../modules/backpoolassociation"
+  vm2_backend_attach = var.vm2_backend_attach
+  
+}
+module "appgateway" {
+  depends_on = [module.rg, module.vnet, module.pip, module.computing,module.nsg]
+  source     = "../../modules/appgatway"
+  appgateway    = var.appgateway
+}
+module "appgatway_association" {
+  depends_on = [module.appgateway, module.computing]
+  source     = "../../modules/appassociationvm"
+  nic_aapgatway = var.nic_aapgatway
+  
+}
