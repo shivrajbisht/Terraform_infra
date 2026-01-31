@@ -7,6 +7,12 @@ terraform {
       version = "4.57.0"
     }
   }
+   backend "azurerm" {
+    resource_group_name  = "terraformfile"
+    storage_account_name = "myinfrastatefile"
+    container_name       = "mystatefile"
+    key                  = "prod/infra.tfstate"
+  }
 }
 provider "azurerm" {
   features {}

@@ -1,0 +1,205 @@
+trigger: none
+
+pool:
+  name: raju01
+
+stages:
+- stage: scanning
+  jobs:
+  - job: sonarscan
+    displayName: "sonars scan"
+    steps:
+    - task: SonarCloudPrepare@4
+      inputs:
+        SonarQube: 'infra01'
+        organization: 'raju089singh'
+        scannerMode: 'cli'
+        configMode: 'manual'
+        cliProjectKey: 'infra01'
+        cliProjectName: 'infra01'
+        cliSources: '.'
+    - task: SonarCloudAnalyze@4
+      inputs:
+        jdkversion: 'JAVA_HOME_17_X64'
+    - task: SonarCloudPublish@4
+      inputs:
+        pollingTimeoutSec: '300'
+
+  - job: checkov
+    displayName: "checkov scan"
+    steps:
+    - task: PowerShell@2
+      displayName: "Python Version"
+      inputs:
+        targetType: 'inline'
+        script: 'python --version'
+    - task: PowerShell@2
+      displayName: "Install Checkov"
+      inputs:
+        targetType: 'inline'
+        script: |
+          python -m pip install --upgrade pip
+          pip install checkov
+    - task: PowerShell@2
+      displayName: "Run Checkov"
+      inputs:
+        targetType: 'inline'
+        script: '''checkov -d . --framework terraform --soft-fail'''
+
+- stage: iac_scanning
+  jobs:
+  - job: tflint
+    displayName: "infra linting"
+    steps:
+
+    # 1️⃣ Install TFLint
+    - task: PowerShell@2
+      displayName: 'install tflint'
+      inputs:
+        targetType: inline
+        script: |
+          $version = "v0.50.3"
+          $url = "https://github.com/terraform-linters/tflint/releases/download/$version/tflint_windows_amd64.zip"
+          $zip = "$(Agent.TempDirectory)\tflint.zip"
+          $dir = "$(Agent.TempDirectory)\tflint"
+
+          Invoke-WebRequest $url -OutFile $zip
+          Expand-Archive $zip $dir -Force
+
+          & "$dir\tflint.exe" --version
+
+    # 2️⃣ Lint (WARNINGS IGNORE)
+    - task: PowerShell@2
+      displayName: 'tflint'
+      inputs:
+        targetType: inline
+        script: |
+          $tflintExe = "$(Agent.TempDirectory)\tflint\tflint.exe"
+          $configPath = "$(Agent.TempDirectory)\.tflint.hcl"
+
+          @"
+          plugin "azurerm" {
+            enabled = true
+            source  = "github.com/terraform-linters/tflint-ruleset-azurerm"
+            version = "0.25.1"
+          }
+
+          rule "terraform_unused_declarations" {
+            enabled = false
+          }
+          "@ | Out-File $configPath -Encoding utf8
+
+          cd "$(Build.SourcesDirectory)\environment\Dev"
+
+          & $tflintExe --config $configPath --init
+          & $tflintExe --config $configPath
+  - job: tfsec
+    displayName: "tfsec scan"
+    steps:
+    - task: PowerShell@2
+      displayName: "Download tfsec"
+      inputs:
+        targetType: 'inline'
+        script: |
+          Invoke-WebRequest `
+                      -Uri https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-windows-amd64.exe `
+                      -OutFile tfsec.exe
+    - task: PowerShell@2
+      displayName: "Run tfsec"
+      inputs:
+        targetType: 'inline'
+        script: '.\tfsec.exe .'
+- stage: pre_deployment
+  jobs:
+    - job: pre_deployment
+      displayName: "Pre-Deployment Terraform Checks"
+      steps:
+      - task: TerraformInstaller@1
+        inputs:
+          terraformVersion: 'latest'
+      - task: TerraformTask@5
+        inputs:
+          provider: 'azurerm'
+          command: 'init'
+          workingDirectory: '$(System.DefaultWorkingDirectory)/environment/Dev'
+          backendServiceArm: 'azure01'
+          backendAzureRmStorageAccountName: 'myinfrastatefile'
+          backendAzureRmContainerName: 'mystatefile'
+          backendAzureRmKey: 'prod/infra.tfstate'
+      - task: TerraformTask@5
+        inputs:
+          provider: 'azurerm'
+          command: 'validate'
+          workingDirectory: '$(System.DefaultWorkingDirectory)/environment/Dev'
+      - task: TerraformTask@5
+        inputs:
+          provider: 'azurerm'
+          command: 'plan'
+          workingDirectory: '$(System.DefaultWorkingDirectory)/environment/Dev'
+          environmentServiceNameAzureRM: 'azure01'
+- stage: validation
+  jobs:
+    - job: manualvalidation
+      displayName: "Waiting for Approval"
+      pool: server
+      steps:
+      - task: ManualValidation@1
+        inputs:
+          notifyUsers: |
+            jitendarsingh04@gmail.com
+            amit3001muz@gmail.com
+          instructions: '''Please validate and approve this stage'''
+# - stage: CostAnalysis
+#   displayName: "Cost Analysis - FinOps"
+#   dependsOn: validation
+#   jobs:
+#     - job: infracost
+#       displayName: "Cost Analysis - FinOps"
+#       steps:
+#       - task: PowerShell@2
+#         displayName: 'Install Infracost from'
+#         inputs:
+#           targetType: 'inline'
+#           script: |
+#             Write-Host "Installing Infracost..."
+#                         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+#                         iex "& { $(irm https://www.infracost.io/install.ps1) }"
+#                         Write-Host "Infracost installed successfully"
+#                         infracost --version
+#       - task: PowerShell@2
+#         displayName: 'Run Infracost Estimate'
+#         inputs:
+#           targetType: 'inline'
+#           script: |
+#             cd "$(Build.SourcesDirectory)\environment\Dev"
+#                         terraform init -input=false
+#                         terraform plan -out=tfplan -input=false
+#                         terraform show -json tfplan > tfplan.json
+#                         Write-Host "Running Infracost breakdown..."
+#                         infracost breakdown --path . --tfplan-file tfplan.json --format json --out-file infracost.json
+#                         infracost output --path infracost.json --format table
+- stage: deploymen
+  displayName: deploymen
+  jobs:
+    - job: deploymen
+      displayName: infra deploymen
+      steps:
+      - task: TerraformInstaller@1
+        inputs:
+          terraformVersion: 'latest'
+      - task: TerraformTask@5
+        inputs:
+          provider: 'azurerm'
+          command: 'init'
+          workingDirectory: '$(System.DefaultWorkingDirectory)/environment/Dev'
+          backendServiceArm: 'azure01'
+          backendAzureRmStorageAccountName: 'myinfrastatefile'
+          backendAzureRmContainerName: 'mystatefile'
+          backendAzureRmKey: 'prod/infra.tfstate'
+      - task: TerraformTask@5
+        inputs:
+          provider: 'azurerm'
+          command: 'apply'
+          workingDirectory: '$(System.DefaultWorkingDirectory)/environment/Dev'
+          commandOptions: '-auto-approve'
+          environmentServiceNameAzureRM: 'azure01'
